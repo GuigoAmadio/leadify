@@ -7,8 +7,9 @@ import (
 	"time"
 )
 
-const RATE_LIMIT = 100
-const TEMPO_ESPERA = 30 * time.Minute
+// Mudei as constantes para valores menores para testes.
+const RATE_LIMIT = 5
+const TEMPO_ESPERA = 30 * time.Second
 
 // Structs: os tipos vêm DEPOIS do nome da variável
 type Credenciais struct {
@@ -18,9 +19,10 @@ type Credenciais struct {
 }
 
 type Worker struct {
-	lastDescanso time.Time
-	cred         *Credenciais
-	rateAtual    int
+	lastDescanso  time.Time
+	cred          *Credenciais
+	rateAtual     int
+	isTrabalhando bool
 }
 
 type Pool struct {
@@ -39,7 +41,7 @@ func NovaPool() *Pool {
 func NovoWorker(credenciais string) *Worker {
 	// strings.Split precisa do pacote "strings"
 	tempCreds := strings.Split(credenciais, ":")
-	
+
 	creds := &Credenciais{
 		usuario: tempCreds[0],
 		senha:   tempCreds[1],
@@ -47,15 +49,16 @@ func NovoWorker(credenciais string) *Worker {
 	}
 
 	return &Worker{
-		lastDescanso: time.Now(),
-		cred:         creds,
-		rateAtual:    0,
+		lastDescanso:  time.Now(),
+		cred:          creds,
+		rateAtual:     0,
+		isTrabalhando: true,
 	}
 }
 
 func criarWorkers(credenciais []string) []*Worker {
 	var workers []*Worker
-	
+
 	// Equivalente ao "for v in credenciais"
 	for _, v := range credenciais {
 		worker := NovoWorker(v)
@@ -68,7 +71,7 @@ func criarWorkers(credenciais []string) []*Worker {
 func instanciarWorkersBulk(workers []*Worker, pool *Pool) {
 	pool.mu.Lock()
 	defer pool.mu.Unlock()
-	
+
 	// Adicionando vários itens de uma vez no slice
 	pool.workers = append(pool.workers, workers...)
 	pool.numWorkers += len(workers)
@@ -98,21 +101,25 @@ func verificarRateLimit(worker *Worker, poolDescanso *Pool, poolTrabalhando *Poo
 	if worker.rateAtual >= RATE_LIMIT {
 		worker.rateAtual = 0
 		worker.lastDescanso = time.Now()
+		worker.isTrabalhando = false
 		moverWorker(worker, poolTrabalhando, poolDescanso)
+		println("Rate limit atingido! Movendo para a pool de descanso...")
 	}
 }
 
 // A função normal que vamos chamar com "go" depois
 func checkarQuemTaMorcegando(poolDescanso *Pool, poolTrabalhando *Pool) {
 	for { // while(true) do Go
-		
+
 		var workersParaMover []*Worker
 
 		poolDescanso.mu.Lock()
 		for _, worker := range poolDescanso.workers {
 			// Subtração de tempo no Go é feita com time.Since
 			if time.Since(worker.lastDescanso) >= TEMPO_ESPERA {
+				worker.isTrabalhando = true
 				workersParaMover = append(workersParaMover, worker)
+				println("Tempo de descanso ja deu... movendo para a pool de trabalho")
 			}
 		}
 		poolDescanso.mu.Unlock()
@@ -123,6 +130,21 @@ func checkarQuemTaMorcegando(poolDescanso *Pool, poolTrabalhando *Pool) {
 		}
 
 		time.Sleep(30 * time.Second) // O sleep precisa ficar DENTRO do loop
+	}
+}
+
+// Funcao feita pra rodar em background, dando servico para o worker que estiver na pool de trabalho
+func testeDeTrabalho(worker *Worker, poolDescanso *Pool, poolTrabalho *Pool) {
+
+	for {
+		if worker.isTrabalhando == true {
+			fmt.Printf("Trabalhei! %s - Rate limit atual: %d\n", time.Now().Format("15:04:05"), worker.rateAtual)
+			worker.rateAtual++
+			verificarRateLimit(worker, poolDescanso, poolTrabalho)
+		} else {
+			fmt.Printf("Estou descansando! %s - Rate limit atual: %d\n", time.Now().Format("15:04:05"), worker.rateAtual)
+		}
+		time.Sleep(10 * time.Second)
 	}
 }
 
@@ -138,9 +160,10 @@ func main() {
 
 	// Inicia a rotina em background
 	go checkarQuemTaMorcegando(poolDescanso, poolTrabalhando)
+	go testeDeTrabalho(workers[0], poolDescanso, poolTrabalhando)
 
 	fmt.Printf("Trabalhadores instanciados: %d\n", poolTrabalhando.numWorkers)
-	
+
 	// Trava a main() para o programa não fechar imediatamente
 	select {}
 }
