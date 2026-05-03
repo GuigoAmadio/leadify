@@ -19,10 +19,12 @@ type Credenciais struct {
 }
 
 type Worker struct {
+	mu            sync.Mutex
 	lastDescanso  time.Time
 	cred          *Credenciais
 	rateAtual     int
 	isTrabalhando bool
+	isOcupado     bool
 }
 
 type Pool struct {
@@ -53,6 +55,7 @@ func NovoWorker(credenciais string) *Worker {
 		cred:          creds,
 		rateAtual:     0,
 		isTrabalhando: true,
+		isOcupado:     false,
 	}
 }
 
@@ -102,6 +105,7 @@ func verificarRateLimit(worker *Worker, poolDescanso *Pool, poolTrabalhando *Poo
 		worker.rateAtual = 0
 		worker.lastDescanso = time.Now()
 		worker.isTrabalhando = false
+		worker.isOcupado = false
 		moverWorker(worker, poolTrabalhando, poolDescanso)
 		println("Rate limit atingido! Movendo para a pool de descanso...")
 	}
@@ -115,12 +119,14 @@ func checkarQuemTaMorcegando(poolDescanso *Pool, poolTrabalhando *Pool) {
 
 		poolDescanso.mu.Lock()
 		for _, worker := range poolDescanso.workers {
+			worker.mu.Lock()
 			// Subtração de tempo no Go é feita com time.Since
 			if time.Since(worker.lastDescanso) >= TEMPO_ESPERA {
 				worker.isTrabalhando = true
 				workersParaMover = append(workersParaMover, worker)
 				println("Tempo de descanso ja deu... movendo para a pool de trabalho")
 			}
+			worker.mu.Unlock()
 		}
 		poolDescanso.mu.Unlock()
 
@@ -134,17 +140,41 @@ func checkarQuemTaMorcegando(poolDescanso *Pool, poolTrabalhando *Pool) {
 }
 
 // Funcao feita pra rodar em background, dando servico para o worker que estiver na pool de trabalho
-func testeDeTrabalho(worker *Worker, poolDescanso *Pool, poolTrabalho *Pool) {
+func testeDeTrabalho(worker *Worker, poolDescanso *Pool, poolTrabalho *Pool, index int) {
+	worker.mu.Lock()
+	if !worker.isTrabalhando {
+		worker.mu.Unlock()
+		fmt.Printf("[WORKER %d] Estou descansando! %s - Rate limit atual: %d\n", index, time.Now().Format("15:04:05"), worker.rateAtual)
+		return
+	}
+	worker.isOcupado = true
+	worker.mu.Unlock()
 
+	fmt.Printf("[WORKER %d] Trabalhando! %s - Rate limit atual: %d\n", index, time.Now().Format("15:04:05"), worker.rateAtual)
+	time.Sleep(10 * time.Second)
+
+	worker.mu.Lock()
+	worker.rateAtual++
+	worker.isOcupado = false
+	worker.mu.Unlock()
+	verificarRateLimit(worker, poolDescanso, poolTrabalho)
+}
+
+func darTrabalho(poolTrabalho *Pool, poolDescanso *Pool) {
 	for {
-		if worker.isTrabalhando == true {
-			fmt.Printf("Trabalhei! %s - Rate limit atual: %d\n", time.Now().Format("15:04:05"), worker.rateAtual)
-			worker.rateAtual++
-			verificarRateLimit(worker, poolDescanso, poolTrabalho)
-		} else {
-			fmt.Printf("Estou descansando! %s - Rate limit atual: %d\n", time.Now().Format("15:04:05"), worker.rateAtual)
+		// Usando o Lock para evitar condicoes de corrida com outras funcoes que acessam a Pool
+		poolTrabalho.mu.Lock()
+		for i, worker := range poolTrabalho.workers {
+			worker.mu.Lock()
+			if worker.isOcupado {
+				fmt.Printf("Worker %d esta ocupado.\n", i)
+			} else {
+				go testeDeTrabalho(worker, poolDescanso, poolTrabalho, i)
+			}
+			worker.mu.Unlock()
 		}
-		time.Sleep(10 * time.Second)
+		poolTrabalho.mu.Unlock()
+		time.Sleep(4 * time.Second)
 	}
 }
 
@@ -160,7 +190,7 @@ func main() {
 
 	// Inicia a rotina em background
 	go checkarQuemTaMorcegando(poolDescanso, poolTrabalhando)
-	go testeDeTrabalho(workers[0], poolDescanso, poolTrabalhando)
+	go darTrabalho(poolTrabalhando, poolDescanso)
 
 	fmt.Printf("Trabalhadores instanciados: %d\n", poolTrabalhando.numWorkers)
 
