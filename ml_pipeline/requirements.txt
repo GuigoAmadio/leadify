@@ -1,0 +1,6 @@
+openai==1.14.0
+sentence-transformers>=5.1.0
+torch>=2.9.0
+torchvision
+Pillow
+python-dotenv==1.0.1

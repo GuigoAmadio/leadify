@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  db:
+    image: ankane/pgvector:latest
+    container_name: pgvector_db
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: secretpassword
+      POSTGRES_DB: instagram_search
+    ports:
+      - "5435:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Maps the ENTIRE migrations folder to the container's boot directory
+      - ./infra/db/migrations:/docker-entrypoint-initdb.d
+    restart: unless-stopped
+
+volumes:
+  pgdata:
